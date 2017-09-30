@@ -62,11 +62,40 @@ function mergeDirs(source, target) {
 }
 
 /**
- * Reform current branch to update branch
- * @param gt reference to git repo with simple-git.Git
+ * Method for creating a PR.
+ * @param repoName name of the repository in the format owner/repo
  * @param cb callback
  */
-function makeUpdate(gt, cb) {
+function makePr(repoName, cb) {
+    const repo = gh.getRepo(getRepo(repoName));
+    repo.listPullRequests({state:'open'}).then(function (prs) {
+        if (prs.filter(pr => pr.title !== 'Update of Ultimate-Comparison-BASE' &&
+                pr.user.login !== 'ultimate-comparison-genie').length !== 0) {
+            repo.createPullRequest({
+                title: 'Update of Ultimate-Comparison-BASE',
+                head: 'travis-update',
+                base: 'master',
+                body: 'This is PR was automatically created because Ultimate-Comparisons-BASE was updated.\n' +
+                    'Pease incorporate this PR into this comparison.',
+                maintainer_can_modify: true
+            }).then(function () {
+                cb();
+            }).catch(function (error) {
+                console.error(error);
+            });
+        } else {
+            console.log('PR already open and thus no creation needed')
+        }
+    });
+}
+
+/**
+ * Reform current branch to update branch
+ * @param gt reference to git repo with simple-git.Git
+ * @param repoName full name of the repo, meaning 'owner/repo'
+ * @param cb callback
+ */
+function makeUpdate(gt, repoName, cb) {
     const path = gt._baseDir;
     const ignores = [
         'comparison-configuration',
@@ -80,21 +109,31 @@ function makeUpdate(gt, cb) {
         'citation/default.bib'
     ];
     for (const ignore of ignores) {
-        deleteRecursive(`${path}/${ignore}`);
+        try {
+            deleteRecursive(`${path}/${ignore}`);
+        } catch (error) {
+            console.error(error);
+        }
     }
 
+    ignores.push('.git');
+
     fs.readdirSync('.').filter(f => ignores.indexOf(f) === -1).forEach(file => {
-        if (fs.statSync(file).isDirectory()) {
-            mergeDirs(file, path);
-        } else {
-            fs.createReadStream(file).pipe(fs.createWriteStream(`${path}/${file}`));
+        try {
+            if (fs.statSync(file).isDirectory()) {
+                mergeDirs(file, path);
+            } else {
+                fs.createReadStream(file).pipe(fs.createWriteStream(`${path}/${file}`));
+            }
+        } catch (error) {
+            console.error(error);
         }
     });
 
     gt.add(path).then(function () {
         gt.commit('Travis commit for travis-update').then(function () {
             gt.push('origin', 'travis-update').then(function () {
-                cb();
+                makePr(repoName, cb);
             });
         });
     });
@@ -113,29 +152,33 @@ const apiToken = process.argv[2];
 const gh = new Github({
     token: apiToken
 });
-const uc = gh.getOrganization('ultimate-comparisons');
+const uc = gh.getOrganization('ultimate-comparisons-test');
 uc.getRepos().then(rs => {
     const repos = rs.data
         .map(r => { return { fullname: r.full_name, name: r.full_name.split('/')[1]}; })
-        .filter(r => r.name !== 'ultimate-comparison-BASE');
+        .filter(r => r.name !== 'ultimate-comparison-BASE' && !r.name.endsWith('.io'));
 
     async.eachOf(repos, function (repo, index, cb) {
         git.clone(`git@github.com:${repo.fullname}.git`, function () {
             const gt = Git('../' + repo.name);
-            gt.branch(function (err, branches) {
-                if (err) {
-                    console.error(err);
-                }
-                if (branches.branches.keys().indexOf('travis-update') === -1) {
-                    gt.checkoutLocalBranch('travis-update', function () {
-                        makeUpdate(gt, cb);
+            gt.addConfig('user.email', 'hueneburg.armin@gmail.com').then(function() {
+                gt.addConfig('user.name', 'Armin Hüneburg').then(function() {
+                    gt.branch(function (err, branches) {
+                        if (err) {
+                            console.error(err);
+                        }
+                        if (branches.branches.keys().indexOf('travis-update') === -1) {
+                            gt.checkoutLocalBranch('travis-update', function () {
+                                makeUpdate(gt, repo.fullname, cb);
+                            });
+                        } else {
+                            gt.checkout('travis-update', function () {
+                                makeUpdate(gt, repo.fullname, cb);
+                            });
+                        }
                     });
-                } else {
-                    gt.checkout('travis-update', function () {
-                        makeUpdate(gt, cb);
-                    });
-                }
-            })
+                });
+            });
         });
     }, function (err) {
         if (err) {
@@ -148,7 +191,7 @@ uc.getRepos().then(rs => {
             .filter(e => !e.startsWith('#') && e.length > 0)
             .map(e => { return {fullname: e, name: e.split('/')[1]}; });
 
-        async.eachOf(repos, function (repo, index, cb) {
+        async.eachOf(foreignRepos, function (repo, index, cb) {
             git.clone(`git@github.com:${repo.fullname}.git`, function () {
                 const gt = Git('../' + repo.name);
                 gt.branch(function (err, branches) {
@@ -157,11 +200,11 @@ uc.getRepos().then(rs => {
                     }
                     if (branches.branches.keys().indexOf('travis-update') === -1) {
                         gt.checkoutLocalBranch('travis-update', function () {
-                            makeUpdate(gt, cb);
+                            makeUpdate(gt, repo.fullname, cb);
                         });
                     } else {
                         gt.checkout('travis-update', function () {
-                            makeUpdate(gt, cb);
+                            makeUpdate(gt, repo.fullname, cb);
                         });
                     }
                 })

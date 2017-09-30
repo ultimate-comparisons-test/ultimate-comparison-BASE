@@ -130,7 +130,7 @@ disable_expanded_output() {
 # run script to update repos
 update_repos () {
   npm install github-api simple-git
-  node update-repos.js
+  node update-repos.js ${GITHUB_TOKEN}
 }
 
 main
